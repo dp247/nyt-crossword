@@ -7,8 +7,8 @@ export default function CrosswordGrid({ grid, cols = 5, rows = 5, onInput }) {
   //   --cell = clamp(min, preferred, max)
   // preferred = 80vmin / cols → scales to the viewport and number of columns
   const style = {
-    // preferred size uses viewport; clamp keeps it usable on phones/desktops
-    "--cell": `clamp(32px, calc(80vmin / ${cols}), 64px)`,
+    // Bigger cap for big screens; still scales with viewport and # of columns
+    "--cell": `clamp(32px, calc(80vmin / ${cols}), 88px)`,
     gridTemplateColumns: `repeat(${cols}, var(--cell))`,
   };
 
