@@ -41,7 +41,7 @@ function randomDateBetween(aISO, bISO) {
 function validateDateMiddleware(req, res, next) {
   const date = req.params.date;
   if (!isValidDateStr(date)) {
-    return res.status(400).json({ error: 'Bad date format, expected yyyy-mm-dd' });
+    return res.status(400).json({ ok: false, error: 'Bad date format, expected yyyy-mm-dd' });
   }
   // enforce first date and not after today
   if (toDate(date) < toDate(FIRST_DATE)) {
@@ -88,6 +88,7 @@ app.get('/puzzle/mini/random.json', async (req, res) => {
         cache[date] = { timestamp: Date.now(), data: body };
         // tell the client which date was chosen
         res.setHeader('X-Crossword-Date', date);
+        console.log("Returning random crossword for", date);
         return res.status(200).type(type).send(body);
       }
     } catch (_) {

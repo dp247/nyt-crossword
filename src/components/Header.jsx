@@ -10,12 +10,11 @@ export default function Header() {
         <Link
           to="/random"
           className="text-sm border px-2 py-1 rounded hover:bg-gray-100"
-          title="Load a random Mini"
+          title="Load a random Mini crossword"
         >
           Random
         </Link>
       </div>
-      {/* Right side intentionally empty – your Start/Pause/Timer float on the card */}
     </div>
   );
 }

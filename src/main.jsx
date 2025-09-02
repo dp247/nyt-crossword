@@ -3,6 +3,7 @@ import ReactDOM from 'react-dom/client'
 import { BrowserRouter, Routes, Route } from 'react-router-dom'
 import App from './App.jsx'
 import './index.css'
+import Scoreboard from './components/Scoreboard.jsx'
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
@@ -12,6 +13,7 @@ ReactDOM.createRoot(document.getElementById('root')).render(
         <Route path="/" element={<App />} />
         {/* date route: /2025-08-03 */}
         <Route path="/:date" element={<App />} />
+        <Route path="/scoreboard" element={<Scoreboard />} />
       </Routes>
     </BrowserRouter>
   </React.StrictMode>
