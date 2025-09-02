@@ -1,12 +1,58 @@
-# React + Vite
+# 🧩 NYT Mini Crossword (Unofficial Web App)
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+Play any New York Times Mini Crossword in a polished, game-like web app.  
+Built with **React + Tailwind CSS** on the frontend and an **Express proxy** backend that fetches JSON.
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+## ✨ Features
 
-## Expanding the ESLint configuration
+- ⬜ Dynamic crossword grid (supports 5×5, 6×6, and specials)
+- 🔀 Random puzzle loader
+- 🕒 Built-in timer with Start / Pause / Resume
+- 👀 Clues hidden until the timer starts (then re-hidden on pause)
+- ✅ Answer checking (correct = grey, wrong = red, blank = white)
+- ⌨️ Keyboard navigation:
+  - Arrow keys move caret
+  - Typing auto-advances
+  - Backspace clears/moves back
+  - Space/Tab toggles Across/Down
+  - Home/End jumps to start/end of word
+- 🎉 Surprise ending
 
-If you are developing a production application, we recommend using TypeScript with type-aware lint rules enabled. Check out the [TS template](https://github.com/vitejs/vite/tree/main/packages/create-vite/template-react-ts) for information on how to integrate TypeScript and [`typescript-eslint`](https://typescript-eslint.io) in your project.
+---
+
+## 🛠️ Tech Stack
+
+**Frontend**
+- React (via Vite)
+- React Router
+- Tailwind CSS
+
+**Backend**
+- Node.js + Express
+- In-memory cache (1 hour TTL)
+- Proxy headers required by NYT API
+
+**Build Tools**
+- Vite proxy in dev
+- Docker for easy distribution
+
+---
+
+## 🚀 Getting Started (Local Dev)
+
+Clone and install dependencies:
+
+```bash
+git clone https://github.com/dp247/nyt-mini.git
+cd <repo>
+npm install
+```
+
+Run:
+
+```bash
+node server.js
+npm run dev
+```
