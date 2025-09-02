@@ -40,13 +40,13 @@ Built with **React + Tailwind CSS** on the frontend and an **Express proxy** bac
 
 ---
 
-## 🚀 Getting Started (Local Dev)
+## Running locally
 
 Clone and install dependencies:
 
 ```bash
 git clone https://github.com/dp247/nyt-crossword.git
-cd <repo>
+cd nyt-crossword
 npm install
 ```
 
@@ -56,3 +56,24 @@ Run:
 node server.js
 npm run dev
 ```
+
+Go to http://localhost:5173 to play!
+
+## Running with Docker
+
+Via GHCR:
+
+```bash
+docker run -p 3001:3001 ghcr.io/dp247/nyt-mini:latest
+```
+
+Via download:
+
+```bash
+git clone https://github.com/dp247/nyt-crossword.git
+cd nyt-crossword
+docker build -t nyt-mini .
+docker run -p 3001:3001 nyt-mini
+```
+
+Go to http://localhost:3001 to play!
