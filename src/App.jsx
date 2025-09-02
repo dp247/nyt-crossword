@@ -4,8 +4,7 @@ import CrosswordGrid from "./components/CrosswordGrid";
 import ClueList from "./components/ClueList";
 import Header from "./components/Header";
 import Footer from "./components/Footer";
-import { recordScore } from "./utils/scoreStorage";
-import ReactConfetti from "react-confetti";
+import { recordScore, loadPuzzleState, savePuzzleState, clearPuzzleState } from "./utils/scoreStorage";
 
 // ----- helpers
 function todayISO() {
@@ -14,13 +13,20 @@ function todayISO() {
   const day = String(d.getDate()).padStart(2, "0");
   return `${d.getFullYear()}-${m}-${day}`;
 }
+function isPlayableCell(c) { return c && (c.type === 1 || typeof c.answer === "string"); }
+function isAllCorrect(grid) {
+  return grid.length > 0 && grid.every((c) => !c || (String(c.userInput || "").toUpperCase() === String(c.answer || "").toUpperCase()));
+}
 
 export default function App() {
   const params = useParams();
   const navigate = useNavigate();
 
-  // route param may be yyyy-mm-dd or 'random'
   const dateParam = params.date;
+  const effectiveDate = useMemo(() => {
+    if (dateParam === "random") return null;
+    return /^\d{4}-\d{2}-\d{2}$/.test(dateParam || "") ? dateParam : todayISO();
+  }, [dateParam]);
 
   // data + ui state
   const [puzzle, setPuzzle] = useState(null); // [{ label, direction, clue, cells: [indices...] }]
@@ -39,21 +45,15 @@ export default function App() {
   const [activeIndex, setActiveIndex] = useState(null);
   const [direction, setDirection] = useState("Across"); // "Across" | "Down"
   const inputRefs = useRef([]); // refs to input fields, one per cell index
-
-  const effectiveDate = useMemo(() => {
-    if (dateParam === "random") return null; // will resolve after fetch/redirect
-    return /^\d{4}-\d{2}-\d{2}$/.test(dateParam || "") ? dateParam : todayISO();
-  }, [dateParam]);
-
-  const [showConfetti, setShowConfetti] = useState(false);
+  const [completed, setCompleted] = useState(false);    // auto-finish flag
 
   // timer tick
   useEffect(() => {
-    if (!started || paused) return;
+    if (!started || paused || completed) return;
     const id = setInterval(() => setTimer((t) => t + 1), 1000);
     setIntervalId(id);
     return () => clearInterval(id);
-  }, [started, paused]);
+  }, [started, paused, completed]);
 
   // fetch puzzle whenever route changes
   useEffect(() => {
@@ -63,17 +63,16 @@ export default function App() {
       setGrid([]);
       setStarted(false);
       setPaused(false);
+      setCompleted(false);
       setTimer(0);
       setActiveIndex(null);
       setDirection("Across");
 
       try {
-        let url;
-        if (dateParam === "random") {
-          url = `/api/puzzle/mini/random.json`;
-        } else {
-          url = `/api/puzzle/mini/${effectiveDate}.json`;
-        }
+        const url =
+          dateParam === "random"
+            ? `/api/puzzle/mini/random.json`
+            : `/api/puzzle/mini/${effectiveDate}.json`;
 
         const res = await fetch(url, { redirect: "follow" });
         if (!res.ok) {
@@ -82,13 +81,11 @@ export default function App() {
           throw new Error(msg);
         }
 
-        // if random, update URL to the resolved date (from final redirect URL)
+        // random → header gives us the resolved date
         if (dateParam === "random") {
           const resolved = res.headers.get("X-Crossword-Date");
           if (resolved && /^\d{4}-\d{2}-\d{2}$/.test(resolved)) {
             navigate(`/${resolved}`, { replace: true });
-          } else {
-            console.warn("Random puzzle resolved date not found in headers");
           }
         }
 
@@ -96,20 +93,13 @@ export default function App() {
         const data = meta?.body?.[0];
         if (!data?.cells || !data?.clues) throw new Error("Malformed NYT payload");
 
-        // figure out board dimensions (NYT usually includes one of these; otherwise infer)
-        const cols =
-          data?.dimensions?.cols ??
-          data?.size?.cols ??
-          Math.sqrt(data.cells.length) | 0; // fallback for perfect squares
-        const rows =
-          data?.dimensions?.rows ??
-          data?.size?.rows ??
-          Math.ceil(data.cells.length / cols);
+        // dimensions
+        const newCols = data?.dimensions?.cols ?? data?.size?.cols ?? (Math.sqrt(data.cells.length) | 0);
+        const newRows = data?.dimensions?.rows ?? data?.size?.rows ?? Math.ceil(data.cells.length / newCols);
 
-        // build grid: playable if type=1 or has 'answer'
-        const isPlayable = (c) => c && (c.type === 1 || typeof c.answer === "string");
+        // base grid
         const initialGrid = data.cells.map((cell, i) =>
-          isPlayable(cell)
+          isPlayableCell(cell)
             ? {
               ...cell,
               id: i,
@@ -119,8 +109,7 @@ export default function App() {
             }
             : null
         );
-
-        // ensure both Across and Down starts have labels (NYT puts label on first cell of each clue)
+        // labels on clue starts
         data.clues.forEach((cl) => {
           const startIdx = cl.cells?.[0];
           if (startIdx != null && initialGrid[startIdx]) {
@@ -128,21 +117,51 @@ export default function App() {
           }
         });
 
-        // set puzzle & grid
-        setPuzzle(
-          data.clues.map((c) => ({
-            label: c.label,
-            direction: c.direction,
-            clue: (c.text?.[0]?.plain ?? "").trim(),
-            cells: c.cells || [],
-          }))
-        );
-        setGrid(initialGrid);
-        setCols(cols);
-        setRows(rows);
+        // core puzzle structure
+        const corePuzzle = data.clues.map((c) => ({
+          label: c.label,
+          direction: c.direction,
+          clue: (c.text?.[0]?.plain ?? "").trim(),
+          cells: c.cells || [],
+        }));
+
+        // Try restoring saved state for this date
+        const thisDate = (dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : null) || effectiveDate || todayISO();
+        const saved = loadPuzzleState(thisDate);
+
+        let restoredGrid = initialGrid;
+        let restoredTimer = 0, restoredStarted = false, restoredPaused = false, restoredCompleted = false;
+
+        if (saved && Array.isArray(saved.grid) && saved.grid.length === initialGrid.length) {
+          // merge saved userInput/status into the fresh grid (answers come from API)
+          restoredGrid = initialGrid.map((cell, i) => {
+            if (!cell) return null;
+            const s = saved.grid[i] || {};
+            return {
+              ...cell,
+              userInput: typeof s.userInput === "string" ? s.userInput : "",
+              status: s.status || "neutral",
+            };
+          });
+          restoredTimer = Number.isFinite(saved.timer) ? saved.timer : 0;
+          restoredStarted = !!saved.started;
+          restoredPaused = !!saved.paused;
+          restoredCompleted = !!saved.completed;
+
+          // if it was completed, keep statuses or recompute? We'll keep as-is.
+        }
+
+        setPuzzle(corePuzzle);
+        setGrid(restoredGrid);
+        setCols(newCols);
+        setRows(newRows);
+        setTimer(restoredTimer);
+        setStarted(restoredStarted);
+        setPaused(restoredPaused);
+        setCompleted(restoredCompleted);
 
         // pick first playable cell as the starting focus
-        const firstPlayable = initialGrid.findIndex((c) => c && typeof c.answer === "string");
+        const firstPlayable = restoredGrid.findIndex((c) => c && typeof c.answer === "string");
         setActiveIndex(firstPlayable >= 0 ? firstPlayable : null);
         setDirection("Across");
       } catch (e) {
@@ -174,7 +193,7 @@ export default function App() {
     return { indexToAcross: acrossMap, indexToDown: downMap };
   }, [puzzle]);
 
-  // Map each index to its owning clue (by direction)
+  // Map each index to its owning clue (by direction) — for clue highlight selection
   const { indexToAcrossClue, indexToDownClue } = useMemo(() => {
     const a = new Map();
     const d = new Map();
@@ -208,15 +227,56 @@ export default function App() {
     return new Set(cells);
   }, [activeIndex, direction, indexToAcross, indexToDown]);
 
-  // ---- input / timer / check
+  // Current date helper (used for persistence)
+  const currentDate = useMemo(() => {
+    return (dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : null) || effectiveDate || todayISO();
+  }, [dateParam, effectiveDate]);
+
+  // ---- input / persistence / auto-finish
+  const persistState = useCallback((nextGrid, nextTimer, nextStarted, nextPaused, nextCompleted) => {
+    savePuzzleState(currentDate, {
+      date: currentDate,
+      timer: nextTimer,
+      started: nextStarted,
+      paused: nextPaused,
+      completed: nextCompleted,
+      grid: nextGrid.map((c) => (c ? { userInput: c.userInput || "", status: c.status || "neutral" } : null)),
+    });
+  }, [currentDate]);
+
+  // Finish flow (shared by auto-finish and Check Answers)
+  const finishPuzzle = useCallback((finalGrid) => {
+    if (intervalId) clearInterval(intervalId);
+    setCompleted(true);
+    const secs = (t => t)(timer); // freeze current state
+    // ensure grid shows correct everywhere
+    const corrected = finalGrid.map((c) => (c ? { ...c, status: "correct" } : null));
+    setGrid(corrected);
+    recordScore({ date: currentDate, seconds: secs });
+    persistState(corrected, secs, started, paused, true);
+    alert(`🎉 Crossword complete in ${String(Math.floor(secs / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}!`);
+  }, [intervalId, timer, currentDate, persistState, started, paused]);
+
   function handleInput(index, value) {
-    setGrid((prev) =>
-      prev.map((cell, i) =>
+    setGrid((prev) => {
+      const next = prev.map((cell, i) =>
         i === index && cell
-          ? { ...cell, userInput: (value || "").toUpperCase() }
+          ? { ...cell, userInput: (value || "").toUpperCase(), status: cell.status === "wrong" ? "neutral" : cell.status }
           : cell
-      )
-    );
+      );
+
+      // Auto-finish check: every playable cell matches answer
+      const completedNow = isAllCorrect(next);
+      if (completedNow && !completed) {
+        // immediate finish
+        finishPuzzle(next);
+        return next;
+      }
+
+      // Persist in-progress state
+      persistState(next, timer, started, paused, completed);
+      return next;
+    });
   }
 
   function formatTime(seconds) {
@@ -229,9 +289,14 @@ export default function App() {
     if (!started) {
       setStarted(true);
       setPaused(false);
+      persistState(grid, timer, true, false, completed);
       return;
     }
-    setPaused((p) => !p);
+    setPaused((p) => {
+      const next = !p;
+      persistState(grid, timer, started, next, completed);
+      return next;
+    });
   }
 
   function checkAnswers() {
@@ -245,46 +310,17 @@ export default function App() {
       return { ...cell, status: actual === expected ? "correct" : "wrong" };
     });
 
-    const allCorrect = nextGrid.every((cell) => !cell || cell.status === "correct");
-    setGrid(nextGrid);
-
-    if (allCorrect) {
-      if (intervalId) clearInterval(intervalId);
-      alert(`🎉 Crossword complete in ${formatTime(timer)}!`);
-      if (intervalId) clearInterval(intervalId);
-      setShowConfetti(true);
-      setTimeout(() => setShowConfetti(false), 30000);
-      // Persist score: keep best per date
-      const currentDate =
-        (params.date && /^\d{4}-\d{2}-\d{2}$/.test(params.date) ? params.date : null) ||
-        effectiveDate ||
-        todayISO();
-      recordScore({ date: currentDate, seconds: timer });
-      alert(`🎉 Crossword complete in ${formatTime(timer)}!`);
-    }
-  }
-
-  function handleCellClick(i) {
-    if (i == null || !grid[i]) return;
-
-    if (activeIndex === i) {
-      // Clicking the same cell toggles direction
-      setDirection(d => (d === "Across" ? "Down" : "Across"));
+    // If everything is correct → finish; else persist marked statuses
+    if (nextGrid.every((c) => !c || c.status === "correct")) {
+      setGrid(nextGrid);
+      finishPuzzle(nextGrid);
     } else {
-      // New cell: make it active…
-      setActiveIndex(i);
-      // …and choose a default direction that actually exists for this cell
-      const inAcross = indexToAcross.has(i);
-      const inDown = indexToDown.has(i);
-      if (inAcross && !inDown) setDirection("Across");
-      else if (!inAcross && inDown) setDirection("Down");
-      // if it's in both, keep current direction (nice UX), or force Across if you prefer
-      // else if (inAcross && inDown) setDirection("Across");
+      setGrid(nextGrid);
+      persistState(nextGrid, timer, started, paused, completed);
     }
   }
 
-
-  // ---- movement helpers
+  // ---- movement helpers (unchanged)
   function moveWithinWord(offset) {
     if (activeIndex == null) return;
     const { cells, pos } = getWordCells(activeIndex, direction);
@@ -292,39 +328,25 @@ export default function App() {
     const nextPos = Math.min(Math.max(pos + offset, 0), cells.length - 1);
     setActiveIndex(cells[nextPos]);
   }
-
   function jumpToWordEdge(toEnd = false) {
     if (activeIndex == null) return;
     const { cells } = getWordCells(activeIndex, direction);
     if (cells.length === 0) return;
     setActiveIndex(toEnd ? cells[cells.length - 1] : cells[0]);
   }
-
   function toggleDirection() {
     setDirection((d) => (d === "Across" ? "Down" : "Across"));
   }
-
-  function sameRow(a, b) {
-    return Math.floor(a / cols) === Math.floor(b / cols);
-  }
-
-  function inBounds(idx) {
-    return idx >= 0 && idx < grid.length;
-  }
+  function sameRow(a, b) { return Math.floor(a / cols) === Math.floor(b / cols); }
+  function inBounds(idx) { return idx >= 0 && idx < grid.length; }
 
   function moveByArrow(key) {
     if (activeIndex == null) return;
 
     let step = null;
     let horizontal = false;
-    if (key === "ArrowRight") {
-      step = +1;
-      horizontal = true;
-    }
-    if (key === "ArrowLeft") {
-      step = -1;
-      horizontal = true;
-    }
+    if (key === "ArrowRight") { step = +1; horizontal = true; }
+    if (key === "ArrowLeft") { step = -1; horizontal = true; }
     if (key === "ArrowDown") step = +cols;
     if (key === "ArrowUp") step = -cols;
 
@@ -333,16 +355,13 @@ export default function App() {
     let next = activeIndex + step;
 
     while (inBounds(next) && (!grid[next] || (horizontal && !sameRow(activeIndex, next)))) {
-      // if we wrapped to another row on horizontal, stop
       if (horizontal && !sameRow(activeIndex, next)) return;
       next += step;
     }
 
     if (inBounds(next) && grid[next]) {
       setActiveIndex(next);
-      // auto-adjust direction to movement axis
-      if (horizontal) setDirection("Across");
-      else setDirection("Down");
+      if (horizontal) setDirection("Across"); else setDirection("Down");
     }
   }
 
@@ -350,18 +369,28 @@ export default function App() {
     if (activeIndex == null) return;
     const L = letter.toUpperCase();
 
-    setGrid((prev) =>
-      prev.map((cell, i) =>
-        i === activeIndex && cell ? { ...cell, userInput: L } : cell
-      )
-    );
+    setGrid((prev) => {
+      const next = prev.map((cell, i) =>
+        i === activeIndex && cell ? { ...cell, userInput: L, status: cell.status === "wrong" ? "neutral" : cell.status } : cell
+      );
 
-    // advance within current word
-    const { cells, pos } = getWordCells(activeIndex, direction);
-    const nextPos = pos + 1;
-    if (cells.length && nextPos < cells.length) {
-      setActiveIndex(cells[nextPos]);
-    }
+      // advance within current word
+      const { cells, pos } = getWordCells(activeIndex, direction);
+      const nextPos = pos + 1;
+      if (cells.length && nextPos < cells.length) {
+        setActiveIndex(cells[nextPos]);
+      }
+
+      // Auto-finish if all correct
+      const completedNow = isAllCorrect(next);
+      if (completedNow && !completed) {
+        finishPuzzle(next);
+      } else {
+        persistState(next, timer, started, paused, completed);
+      }
+
+      return next;
+    });
   }
 
   function handleBackspace() {
@@ -369,92 +398,115 @@ export default function App() {
     const here = grid[activeIndex];
     if (!here) return;
 
-    if (!here.userInput) {
-      // go back one within the word and clear that cell
-      const { cells, pos } = getWordCells(activeIndex, direction);
-      const prevPos = Math.max(pos - 1, 0);
-      const prevIdx = cells.length ? cells[prevPos] : activeIndex;
+    setGrid((prev) => {
+      let next = prev;
 
-      setGrid((prev) =>
-        prev.map((cell, i) =>
+      if (!here.userInput) {
+        // go back one within the word and clear that cell
+        const { cells, pos } = getWordCells(activeIndex, direction);
+        const prevPos = Math.max(pos - 1, 0);
+        const prevIdx = cells.length ? cells[prevPos] : activeIndex;
+
+        next = prev.map((cell, i) =>
           i === prevIdx && cell ? { ...cell, userInput: "" } : cell
-        )
-      );
-      setActiveIndex(prevIdx);
-    } else {
-      // clear current cell but don't move
-      setGrid((prev) =>
-        prev.map((cell, i) =>
+        );
+        setActiveIndex(prevIdx);
+      } else {
+        // clear current cell but don't move
+        next = prev.map((cell, i) =>
           i === activeIndex && cell ? { ...cell, userInput: "" } : cell
-        )
-      );
-    }
+        );
+      }
+
+      persistState(next, timer, started, paused, completed);
+      return next;
+    });
   }
 
-  // ---- global key handler (attached to the card container)
-  function handleKeyDown(e) {
-    // only handle when started and not paused (keeps the "clues hidden" rule meaningful)
-    if (!started || paused) return;
-
-    const key = e.key || "";
-
-    // Letters
-    if (/^[a-zA-Z]$/.test(key)) {
-      e.preventDefault();
-      typeLetter(key);
-      return;
-    }
-
-    // Navigation
-    if (key === "ArrowLeft" || key === "ArrowRight" || key === "ArrowUp" || key === "ArrowDown") {
-      e.preventDefault();
-      moveByArrow(key);
-      return;
-    }
-
-    if (key === "Backspace") {
-      e.preventDefault();
-      handleBackspace();
-      return;
-    }
-
-    if (key === " " || key === "Tab" || key === "Enter") {
-      e.preventDefault();
-      toggleDirection();
-      return;
-    }
-
-    if (key === "Home") {
-      e.preventDefault();
-      jumpToWordEdge(false);
-      return;
-    }
-
-    if (key === "End") {
-      e.preventDefault();
-      jumpToWordEdge(true);
-      return;
-    }
-  }
-
-  // ---- clue click handler
+  // ---- clue click handler (stable)
   const handleSelectClue = useCallback((clue) => {
     setDirection(clue.direction);
-    // use current grid safely
     setActiveIndex((prev) => {
       const firstPlayable = (clue.cells || []).find((i) => grid[i]);
       return firstPlayable ?? prev;
     });
-  }, [grid]); // <— this won’t change on every tick; only when the grid changes
+  }, [grid]);
 
+  // ---- cell click toggles direction if re-clicked
+  function handleCellClick(i) {
+    if (i == null || !grid[i]) return;
+    if (activeIndex === i) {
+      setDirection((d) => (d === "Across" ? "Down" : "Across"));
+    } else {
+      setActiveIndex(i);
+      const inAcross = (indexToAcross.get(i) || []).length > 0;
+      const inDown = (indexToDown.get(i) || []).length > 0;
+      if (inAcross && !inDown) setDirection("Across");
+      else if (!inAcross && inDown) setDirection("Down");
+    }
+  }
+
+  // ---- clear button behavior (bottom-left footer)
+  function handleClear() {
+    if (grid.length === 0) return;
+    const isComplete = isAllCorrect(grid);
+
+    if (isComplete || completed) {
+      // Confirm full reset to replay
+      if (confirm("Reset this completed crossword to replay from scratch?")) {
+        const cleared = grid.map((c) => (c ? { ...c, userInput: "", status: "neutral" } : null));
+        setGrid(cleared);
+        setTimer(0);
+        setStarted(false);
+        setPaused(false);
+        setCompleted(false);
+        clearPuzzleState(currentDate); // or save empty state:
+        savePuzzleState(currentDate, { date: currentDate, timer: 0, started: false, paused: false, completed: false, grid: cleared.map((c) => c ? { userInput: "", status: "neutral" } : null) });
+      }
+    } else {
+      // Clear only unchecked/incorrect, keep correct
+      const cleared = grid.map((c) => {
+        if (!c) return null;
+        const exp = String(c.answer || "").toUpperCase();
+        const act = String(c.userInput || "").toUpperCase();
+        const isCorrect = !!act && act === exp;
+        if (isCorrect) return c; // leave as-is
+        return { ...c, userInput: "", status: "neutral" };
+      });
+      setGrid(cleared);
+      savePuzzleState(currentDate, { date: currentDate, timer, started, paused, completed: false, grid: cleared.map((c) => c ? { userInput: c.userInput || "", status: c.status || "neutral" } : null) });
+    }
+  }
+
+  // Save current state if the tab is hidden/closed (so timer progress isn't lost)
+  useEffect(() => {
+    function persistNow() {
+      // capture the latest state to storage
+      persistState(grid, timer, started, paused, completed);
+    }
+    document.addEventListener("visibilitychange", persistNow);
+    window.addEventListener("beforeunload", persistNow);
+    return () => {
+      document.removeEventListener("visibilitychange", persistNow);
+      window.removeEventListener("beforeunload", persistNow);
+    };
+  }, [grid, timer, started, paused, completed, persistState]);
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-gray-50">
-      {showConfetti && <ReactConfetti recycle={false} />}
       <div
         className="relative w-full max-w-5xl lg:max-w-6xl xl:max-w-7xl 2xl:max-w-[90rem] min-h-[80vh] bg-white rounded-2xl shadow-lg overflow-hidden flex flex-col"
-        onKeyDown={handleKeyDown}
-        tabIndex={0} // so the card itself can capture keys
+        onKeyDown={(e) => {
+          if (!started || paused) return;
+          const key = e.key || "";
+          if (/^[a-zA-Z]$/.test(key)) { e.preventDefault(); typeLetter(key); return; }
+          if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(key)) { e.preventDefault(); moveByArrow(key); return; }
+          if (key === "Backspace") { e.preventDefault(); handleBackspace(); return; }
+          if (key === " " || key === "Tab" || key === "Enter") { e.preventDefault(); toggleDirection(); return; }
+          if (key === "Home") { e.preventDefault(); jumpToWordEdge(false); return; }
+          if (key === "End") { e.preventDefault(); jumpToWordEdge(true); return; }
+        }}
+        tabIndex={0}
         role="application"
         aria-label="Mini crossword"
       >
@@ -471,24 +523,9 @@ export default function App() {
               <div className="text-center space-y-4">
                 <p className="text-red-600">{error}</p>
                 <div className="flex justify-center gap-3">
-                  <button
-                    onClick={() => navigate("/2014-08-21")}
-                    className="border px-3 py-1 rounded hover:bg-gray-100"
-                  >
-                    Go to first available
-                  </button>
-                  <button
-                    onClick={() => navigate(`/${todayISO()}`)}
-                    className="border px-3 py-1 rounded hover:bg-gray-100"
-                  >
-                    Go to today
-                  </button>
-                  <button
-                    onClick={() => navigate("/random")}
-                    className="border px-3 py-1 rounded hover:bg-gray-100"
-                  >
-                    Random
-                  </button>
+                  <button type="button" onClick={() => navigate("/2014-08-21")} className="border px-3 py-1 rounded hover:bg-gray-100">Go to first available</button>
+                  <button type="button" onClick={() => navigate(`/${todayISO()}`)} className="border px-3 py-1 rounded hover:bg-gray-100">Go to today</button>
+                  <button type="button" onClick={() => navigate("/random")} className="border px-3 py-1 rounded hover:bg-gray-100">Random</button>
                 </div>
               </div>
             ) : (
@@ -498,6 +535,7 @@ export default function App() {
                 rows={rows}
                 onInput={handleInput}
                 activeIndex={activeIndex}
+                setActiveIndex={setActiveIndex}
                 direction={direction}
                 inputRefs={inputRefs}
                 activeWordSet={activeWordSet}
@@ -517,30 +555,39 @@ export default function App() {
                 activeClueKey={activeClueKey}
               />
             ) : (
-              <div className="text-gray-500 italic">
-                Press start to reveal the clues…
-              </div>
+              <div className="text-gray-500 italic">Press start to reveal the clues…</div>
             )}
           </aside>
         </div>
 
-        {/* FOOTER */}
-        <div className="px-6 py-4 border-t flex justify-center">
-          <Footer onCheck={checkAnswers} disabled={!started || paused} />
+        {/* FOOTER — left: Clear, center: Check Answers */}
+        <div className="px-6 py-4 border-t flex items-center justify-between">
+          <button
+            type="button"
+            onClick={handleClear}
+            className="border px-3 py-1 rounded hover:bg-gray-100"
+            title="Clear unchecked/incorrect cells (or reset completed puzzle)"
+          >
+            Clear
+          </button>
+
+          <Footer onCheck={checkAnswers} disabled={!started || paused || completed} />
+          <div className="w-[80px]" aria-hidden /> {/* spacer to balance layout */}
         </div>
 
         {/* FLOATING CONTROLS ON RIGHT EDGE */}
         <div className="absolute top-4 right-6 flex items-center gap-4">
           <button
+            type="button"
             onClick={toggleTimer}
             className="w-24 border px-4 py-1 rounded hover:bg-gray-100"
           >
             {!started ? "Start" : paused ? "Resume" : "Pause"}
           </button>
-          <span className="text-lg font-mono tabular-nums">
-            {formatTime(timer)}
-          </span>
+          <span className="text-lg font-mono tabular-nums">{formatTime(timer)}</span>
         </div>
+
+        {/* SCOREBOARD BUTTON — bottom-right, near footer (kept from earlier) */}
         <div className="absolute bottom-4 right-6">
           <button
             type="button"
