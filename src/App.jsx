@@ -53,6 +53,8 @@ export default function App() {
   const [showClearModal, setShowClearModal] = useState(false);
   const resumeAfterModalRef = useRef(false);
   const [showConfetti, setShowConfetti] = useState(false);
+  const [showToast, setShowToast] = useState(false);
+  const [finalTime, setFinalTime] = useState(null);
 
   const isPlaying = started && !paused && !completed;
 
@@ -76,6 +78,9 @@ export default function App() {
       setTimer(0);
       setActiveIndex(null);
       setDirection("Across");
+      setShowConfetti(false);
+      setShowToast(false);
+      setFinalTime(null);
 
       try {
         const url =
@@ -272,17 +277,23 @@ export default function App() {
   // Called when user completes the puzzle or when auto-complete is detected
   const finishPuzzle = useCallback((finalGrid) => {
     blurActive();
+
     setShowConfetti(true);
     setTimeout(() => setShowConfetti(false), 30000);
+
+    // Stop timer and mark completed
     if (intervalId) clearInterval(intervalId);
     setCompleted(true);
+
     const secs = (t => t)(timer); // freeze current state
+    setFinalTime(formatTime(secs));
+    setShowToast(true);
+
     // ensure grid shows correct everywhere
     const corrected = finalGrid.map((c) => (c ? { ...c, status: "correct" } : null));
     setGrid(corrected);
     recordScore({ date: currentDate, seconds: secs });
     persistState(corrected, secs, started, paused, true);
-    alert(`🎉 Crossword complete in ${String(Math.floor(secs / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}!`);
   }, [intervalId, timer, currentDate, persistState, started, paused]);
 
   // Handle input change in a cell
@@ -613,6 +624,13 @@ export default function App() {
     }
   }
 
+  function handlePlayAnother() {
+    // close celebration UI so it doesn't linger during route change
+    setShowToast(false);
+    setShowConfetti(false);
+    navigate("/random");
+  }
+
   function openClearModal() {
     if (grid.length === 0) return;
     // remember if timer was running; pause while modal is open
@@ -692,7 +710,55 @@ export default function App() {
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-gray-50">
-      {showConfetti && <ReactConfetti recycle={false} />}
+      {showConfetti && <ReactConfetti recycle={false} numberOfPieces={400} />}
+
+      {/* TOAST */}
+      {showToast && (
+        <div
+          className="absolute top-16 left-1/2 -translate-x-1/2 z-50"
+          role="status"
+          aria-live="polite"
+        >
+          <div className="rounded-xl shadow-xl border bg-white/95 backdrop-blur px-5 py-3 flex items-center gap-3">
+            <span className="text-2xl">🎉</span>
+            <div className="text-left">
+              <div className="font-semibold">Crossword completed!</div>
+              <div className="text-sm text-gray-600">
+                Final time: <span className="font-mono tabular-nums">{finalTime}</span>
+              </div>
+            </div>
+
+            <button
+              onClick={handlePlayAnother}
+              className="ml-2 rounded-lg px-3 py-1 text-sm bg-blue-600 text-white hover:bg-blue-700"
+              title="Load another random Mini"
+              type="button"
+            >
+              Play another
+            </button>
+
+            <button
+              onClick={() => navigate("/scoreboard")}
+              className="ml-2 rounded-lg px-2 py-1 text-sm border hover:bg-gray-100"
+              title="View scoreboard"
+              type="button"
+            >
+              Scoreboard
+            </button>
+
+            <button
+              onClick={() => setShowToast(false)}
+              className="ml-2 rounded-lg px-2 py-1 text-sm border hover:bg-gray-100"
+              title="Dismiss"
+              type="button"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Render the card */}
       <div
         className="relative w-full max-w-5xl lg:max-w-6xl xl:max-w-7xl 2xl:max-w-[90rem] min-h-[80vh] bg-white rounded-2xl shadow-lg overflow-hidden flex flex-col"
         onKeyDown={(e) => {
