@@ -288,6 +288,8 @@ export default function App() {
   // Stops timer, marks everything correct, shows alert, records score, persists state
   // Called when user completes the puzzle or when auto-complete is detected
   const finishPuzzle = useCallback(async (finalGrid) => {
+    if (completed) return;
+
     blurActive();
 
     setShowConfetti(true);
@@ -403,6 +405,8 @@ export default function App() {
   // Check answers button handler
   // Marks each cell as correct/wrong/neutral based on user input
   function checkAnswers() {
+    if (completed) return;
+
     if (!grid || grid.length === 0) return;
 
     const nextGrid = grid.map((cell) => {
@@ -869,7 +873,7 @@ export default function App() {
             <button
               type="button"
               onClick={checkAnswers}
-              disabled={!started || paused}
+              disabled={!started || paused || completed}
               className="bg-blue-600 text-white px-6 py-2 rounded font-semibold hover:bg-blue-700 disabled:opacity-50"
             >
               Check Answers
