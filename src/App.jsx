@@ -382,7 +382,11 @@ export default function App() {
 
   // Toggle direction between Across and Down
   function toggleDirection() {
-    setDirection((d) => (d === "Across" ? "Down" : "Across"));
+    const nextDir = direction === "Across" ? "Down" : "Across";
+    const { cells } = getWordCells(activeIndex, nextDir);
+    const target = firstUnfilledIndex(cells, grid);
+    if (target != null) setActiveIndex(target);
+    setDirection(nextDir);
   }
 
   // Move by arrow keys, skipping non-playable cells and wrapping within rows for left/right
@@ -474,26 +478,45 @@ export default function App() {
     });
   }
 
-  // ---- clue click handler (stable)
+  function firstUnfilledIndex(cells, grid) {
+    if (!cells?.length) return null;
+    for (const idx of cells) {
+      const c = grid[idx];
+      if (c && !c.userInput) return idx; // first truly empty
+    }
+    // fallback: everything filled → go to the first cell
+    return cells[0];
+  }
+
+
   const handleSelectClue = useCallback((clue) => {
     setDirection(clue.direction);
-    setActiveIndex((prev) => {
-      const firstPlayable = (clue.cells || []).find((i) => grid[i]);
-      return firstPlayable ?? prev;
-    });
+    const target = firstUnfilledIndex(clue.cells, grid);
+    if (target != null) setActiveIndex(target);
   }, [grid]);
 
   // ---- cell click toggles direction if re-clicked
   function handleCellClick(i) {
     if (i == null || !grid[i]) return;
     if (activeIndex === i) {
-      setDirection((d) => (d === "Across" ? "Down" : "Across"));
+      const nextDir = direction === "Across" ? "Down" : "Across";
+      const { cells } = getWordCells(i, nextDir);
+      const target = firstUnfilledIndex(cells, grid);
+      if (target != null) setActiveIndex(target);
+      setDirection(nextDir);
     } else {
       setActiveIndex(i);
       const inAcross = (indexToAcross.get(i) || []).length > 0;
       const inDown = (indexToDown.get(i) || []).length > 0;
       if (inAcross && !inDown) setDirection("Across");
       else if (!inAcross && inDown) setDirection("Down");
+      else {
+        // If the cell belongs to both, prefer the word with an empty cell
+        const aTarget = firstUnfilledIndex(indexToAcross.get(i), grid);
+        const dTarget = firstUnfilledIndex(indexToDown.get(i), grid);
+        if (aTarget != null && dTarget == null) setDirection("Across");
+        else if (dTarget != null && aTarget == null) setDirection("Down");
+      }
     }
   }
 
