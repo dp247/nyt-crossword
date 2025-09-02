@@ -4,16 +4,23 @@ import CrosswordGrid from "./components/CrosswordGrid";
 import ClueList from "./components/ClueList";
 import Header from "./components/Header";
 import Footer from "./components/Footer";
+import ConfirmClearModal from "./components/ConfirmClearModal";
 import { recordScore, loadPuzzleState, savePuzzleState, clearPuzzleState } from "./utils/scoreStorage";
+import ReactConfetti from "react-confetti";
 
-// ----- helpers
+
+// Return today's date as yyyy-mm-dd
 function todayISO() {
   const d = new Date();
   const m = String(d.getMonth() + 1).padStart(2, "0");
   const day = String(d.getDate()).padStart(2, "0");
   return `${d.getFullYear()}-${m}-${day}`;
 }
+
+// A cell is playable if it's not null and either type 1 (normal) or has an answer string
 function isPlayableCell(c) { return c && (c.type === 1 || typeof c.answer === "string"); }
+
+// Check if every playable cell is correctly filled
 function isAllCorrect(grid) {
   return grid.length > 0 && grid.every((c) => !c || (String(c.userInput || "").toUpperCase() === String(c.answer || "").toUpperCase()));
 }
@@ -28,26 +35,28 @@ export default function App() {
     return /^\d{4}-\d{2}-\d{2}$/.test(dateParam || "") ? dateParam : todayISO();
   }, [dateParam]);
 
-  // data + ui state
-  const [puzzle, setPuzzle] = useState(null); // [{ label, direction, clue, cells: [indices...] }]
-  const [grid, setGrid] = useState([]);       // array of playable cells or nulls for black
+  const [puzzle, setPuzzle] = useState(null);
+  const [grid, setGrid] = useState([]);
   const [cols, setCols] = useState(5);
   const [rows, setRows] = useState(5);
   const [error, setError] = useState("");
 
-  // timer state
   const [timer, setTimer] = useState(0);
   const [started, setStarted] = useState(false);
   const [paused, setPaused] = useState(false);
+  const [completed, setCompleted] = useState(false);
   const [intervalId, setIntervalId] = useState(null);
 
-  // keyboard nav / focus state
   const [activeIndex, setActiveIndex] = useState(null);
-  const [direction, setDirection] = useState("Across"); // "Across" | "Down"
-  const inputRefs = useRef([]); // refs to input fields, one per cell index
-  const [completed, setCompleted] = useState(false);    // auto-finish flag
+  const [direction, setDirection] = useState("Across");
+  const inputRefs = useRef([]);
+  const [showClearModal, setShowClearModal] = useState(false);
+  const resumeAfterModalRef = useRef(false);
+  const [showConfetti, setShowConfetti] = useState(false);
 
-  // timer tick
+  const isPlaying = started && !paused && !completed;
+
+  // Timer effect
   useEffect(() => {
     if (!started || paused || completed) return;
     const id = setInterval(() => setTimer((t) => t + 1), 1000);
@@ -55,7 +64,7 @@ export default function App() {
     return () => clearInterval(id);
   }, [started, paused, completed]);
 
-  // fetch puzzle whenever route changes
+  // Load puzzle effect (on dateParam change)
   useEffect(() => {
     async function load() {
       setError("");
@@ -74,30 +83,32 @@ export default function App() {
             ? `/api/puzzle/mini/random.json`
             : `/api/puzzle/mini/${effectiveDate}.json`;
 
-        const res = await fetch(url, { redirect: "follow" });
+        // Fetch from our backend proxy
+        const res = await fetch(url);
         if (!res.ok) {
           const maybeJson = await res.json().catch(() => null);
           const msg = maybeJson?.error || `HTTP ${res.status}`;
           throw new Error(msg);
         }
+        const meta = await res.json();
 
-        // random → header gives us the resolved date
-        if (dateParam === "random") {
-          const resolved = res.headers.get("X-Crossword-Date");
-          if (resolved && /^\d{4}-\d{2}-\d{2}$/.test(resolved)) {
-            navigate(`/${resolved}`, { replace: true });
-          }
+        // If we requested "random" and got a resolvedDate, redirect to that date
+        if (dateParam === "random" && meta?.resolvedDate) {
+          navigate(`/${meta.resolvedDate}`, { replace: true });
         }
 
-        const meta = await res.json();
+        // Parse and validate payload
         const data = meta?.body?.[0];
         if (!data?.cells || !data?.clues) throw new Error("Malformed NYT payload");
 
-        // dimensions
+        // Determine grid size
+        // Prefer dimensions or size from API; else infer from cell count
+        // (usually 5x5, but some early ones are 4x4 and some special ones are other sizes)
+        // eslint-disable-next-line no-bitwise
         const newCols = data?.dimensions?.cols ?? data?.size?.cols ?? (Math.sqrt(data.cells.length) | 0);
         const newRows = data?.dimensions?.rows ?? data?.size?.rows ?? Math.ceil(data.cells.length / newCols);
 
-        // base grid
+        // Build initial grid state
         const initialGrid = data.cells.map((cell, i) =>
           isPlayableCell(cell)
             ? {
@@ -109,7 +120,7 @@ export default function App() {
             }
             : null
         );
-        // labels on clue starts
+        // Add clue labels to starting cells
         data.clues.forEach((cl) => {
           const startIdx = cl.cells?.[0];
           if (startIdx != null && initialGrid[startIdx]) {
@@ -117,7 +128,7 @@ export default function App() {
           }
         });
 
-        // core puzzle structure
+        // Core puzzle clues
         const corePuzzle = data.clues.map((c) => ({
           label: c.label,
           direction: c.direction,
@@ -128,12 +139,12 @@ export default function App() {
         // Try restoring saved state for this date
         const thisDate = (dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : null) || effectiveDate || todayISO();
         const saved = loadPuzzleState(thisDate);
-
         let restoredGrid = initialGrid;
         let restoredTimer = 0, restoredStarted = false, restoredPaused = false, restoredCompleted = false;
 
+        // Validate saved state
         if (saved && Array.isArray(saved.grid) && saved.grid.length === initialGrid.length) {
-          // merge saved userInput/status into the fresh grid (answers come from API)
+          // Merge saved state into initial grid
           restoredGrid = initialGrid.map((cell, i) => {
             if (!cell) return null;
             const s = saved.grid[i] || {};
@@ -143,12 +154,12 @@ export default function App() {
               status: s.status || "neutral",
             };
           });
+
+          // Validate saved statuses (only "neutral", "correct", "wrong" allowed)
           restoredTimer = Number.isFinite(saved.timer) ? saved.timer : 0;
           restoredStarted = !!saved.started;
           restoredPaused = !!saved.paused;
           restoredCompleted = !!saved.completed;
-
-          // if it was completed, keep statuses or recompute? We'll keep as-is.
         }
 
         setPuzzle(corePuzzle);
@@ -160,7 +171,7 @@ export default function App() {
         setPaused(restoredPaused);
         setCompleted(restoredCompleted);
 
-        // pick first playable cell as the starting focus
+        // Set first active cell (first playable cell in the grid)
         const firstPlayable = restoredGrid.findIndex((c) => c && typeof c.answer === "string");
         setActiveIndex(firstPlayable >= 0 ? firstPlayable : null);
         setDirection("Across");
@@ -170,17 +181,16 @@ export default function App() {
     }
 
     load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [dateParam, effectiveDate]);
 
-  // keep the active input focused
+  // Focus effect (on activeIndex/direction/grid change)
   useEffect(() => {
     if (activeIndex == null) return;
     const el = inputRefs.current[activeIndex];
     if (el && typeof el.focus === "function") el.focus();
   }, [activeIndex, direction, grid]);
 
-  // ---- word lookup maps
+  // Map each index to its full across/down word (for active word highlight)
   const { indexToAcross, indexToDown } = useMemo(() => {
     const acrossMap = new Map();
     const downMap = new Map();
@@ -193,7 +203,10 @@ export default function App() {
     return { indexToAcross: acrossMap, indexToDown: downMap };
   }, [puzzle]);
 
-  // Map each index to its owning clue (by direction) — for clue highlight selection
+  // Maps from cell index to clue key (e.g. "Across:3") for active clue tracking
+  // (a cell may belong to multiple clues, but we just pick one arbitrarily here)
+  // Used to highlight the active clue in the clue list
+  // (if the active cell doesn't belong to any clue in the current direction, this will be null)
   const { indexToAcrossClue, indexToDownClue } = useMemo(() => {
     const a = new Map();
     const d = new Map();
@@ -206,6 +219,7 @@ export default function App() {
     return { indexToAcrossClue: a, indexToDownClue: d };
   }, [puzzle]);
 
+  // Current active clue key (e.g. "Across:3") or null if none
   const activeClueKey = useMemo(() => {
     if (activeIndex == null) return null;
     return direction === "Across"
@@ -213,6 +227,9 @@ export default function App() {
       : indexToDownClue.get(activeIndex) || null;
   }, [activeIndex, direction, indexToAcrossClue, indexToDownClue]);
 
+  // Given a cell index and direction, return the full word's cell indices and the position of the given index within that word
+  // If the index is null or not part of any word in that direction, returns { cells: [], pos: -1 }
+  // Used for active word highlighting and movement within the word
   function getWordCells(i, dir) {
     if (i == null) return { cells: [], pos: -1 };
     const map = dir === "Across" ? indexToAcross : indexToDown;
@@ -221,18 +238,24 @@ export default function App() {
     return { cells, pos };
   }
 
-  // active word highlighting set
+  // Set of cell indices in the current active word (for highlighting)
+  // Recomputed only when activeIndex or direction changes
   const activeWordSet = useMemo(() => {
     const { cells } = getWordCells(activeIndex, direction);
     return new Set(cells);
   }, [activeIndex, direction, indexToAcross, indexToDown]);
 
-  // Current date helper (used for persistence)
+  // Current effective date (validated dateParam or today)
+  // Used for persistence key
   const currentDate = useMemo(() => {
     return (dateParam && /^\d{4}-\d{2}-\d{2}$/.test(dateParam) ? dateParam : null) || effectiveDate || todayISO();
   }, [dateParam, effectiveDate]);
 
-  // ---- input / persistence / auto-finish
+  // Persist state helper (stable)
+  // Saves to localStorage under the current date key
+  // Strips out unneeded cell data before saving
+  // Called whenever grid/timer/started/paused/completed changes
+  // (but not on every keystroke, only when the grid state changes)
   const persistState = useCallback((nextGrid, nextTimer, nextStarted, nextPaused, nextCompleted) => {
     savePuzzleState(currentDate, {
       date: currentDate,
@@ -244,7 +267,9 @@ export default function App() {
     });
   }, [currentDate]);
 
-  // Finish flow (shared by auto-finish and Check Answers)
+  // Finish puzzle helper (stable)
+  // Stops timer, marks everything correct, shows alert, records score, persists state
+  // Called when user completes the puzzle or when auto-complete is detected
   const finishPuzzle = useCallback((finalGrid) => {
     if (intervalId) clearInterval(intervalId);
     setCompleted(true);
@@ -254,9 +279,12 @@ export default function App() {
     setGrid(corrected);
     recordScore({ date: currentDate, seconds: secs });
     persistState(corrected, secs, started, paused, true);
+    setShowConfetti(true);
+    setTimeout(() => setShowConfetti(false), 30000);
     alert(`🎉 Crossword complete in ${String(Math.floor(secs / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}!`);
   }, [intervalId, timer, currentDate, persistState, started, paused]);
 
+  // Handle input change in a cell
   function handleInput(index, value) {
     setGrid((prev) => {
       const next = prev.map((cell, i) =>
@@ -279,26 +307,41 @@ export default function App() {
     });
   }
 
+  // Format time as mm:ss
   function formatTime(seconds) {
     const m = String(Math.floor(seconds / 60)).padStart(2, "0");
     const s = String(seconds % 60).padStart(2, "0");
     return `${m}:${s}`;
   }
 
+  // Start/pause/resume button handler
   function toggleTimer() {
     if (!started) {
       setStarted(true);
       setPaused(false);
       persistState(grid, timer, true, false, completed);
+      setTimeout(() => {
+        const el = inputRefs.current[activeIndex];
+        el?.focus?.();
+      }, 0);
       return;
     }
     setPaused((p) => {
       const next = !p;
       persistState(grid, timer, started, next, completed);
+      if (!next) {
+        // we just resumed → focus the active cell
+        setTimeout(() => {
+          const el = inputRefs.current[activeIndex];
+          el?.focus?.();
+        }, 0);
+      }
       return next;
     });
   }
 
+  // Check answers button handler
+  // Marks each cell as correct/wrong/neutral based on user input
   function checkAnswers() {
     if (!grid || grid.length === 0) return;
 
@@ -310,7 +353,7 @@ export default function App() {
       return { ...cell, status: actual === expected ? "correct" : "wrong" };
     });
 
-    // If everything is correct → finish; else persist marked statuses
+    // If all correct now, finish the puzzle
     if (nextGrid.every((c) => !c || c.status === "correct")) {
       setGrid(nextGrid);
       finishPuzzle(nextGrid);
@@ -320,7 +363,7 @@ export default function App() {
     }
   }
 
-  // ---- movement helpers (unchanged)
+  // Movement within the current word
   function moveWithinWord(offset) {
     if (activeIndex == null) return;
     const { cells, pos } = getWordCells(activeIndex, direction);
@@ -328,28 +371,35 @@ export default function App() {
     const nextPos = Math.min(Math.max(pos + offset, 0), cells.length - 1);
     setActiveIndex(cells[nextPos]);
   }
+
+  // Jump to start or end of current word
   function jumpToWordEdge(toEnd = false) {
     if (activeIndex == null) return;
     const { cells } = getWordCells(activeIndex, direction);
     if (cells.length === 0) return;
     setActiveIndex(toEnd ? cells[cells.length - 1] : cells[0]);
   }
+
+  // Toggle direction between Across and Down
   function toggleDirection() {
     setDirection((d) => (d === "Across" ? "Down" : "Across"));
   }
+
+  // Move by arrow keys, skipping non-playable cells and wrapping within rows for left/right
   function sameRow(a, b) { return Math.floor(a / cols) === Math.floor(b / cols); }
+
+  // Check if index is within grid bounds
   function inBounds(idx) { return idx >= 0 && idx < grid.length; }
 
+  // Move active cell by arrow key, skipping non-playable cells
   function moveByArrow(key) {
     if (activeIndex == null) return;
-
     let step = null;
     let horizontal = false;
     if (key === "ArrowRight") { step = +1; horizontal = true; }
     if (key === "ArrowLeft") { step = -1; horizontal = true; }
     if (key === "ArrowDown") step = +cols;
     if (key === "ArrowUp") step = -cols;
-
     if (step == null) return;
 
     let next = activeIndex + step;
@@ -365,6 +415,7 @@ export default function App() {
     }
   }
 
+  // Type a letter into the active cell and move forward within the word
   function typeLetter(letter) {
     if (activeIndex == null) return;
     const L = letter.toUpperCase();
@@ -374,7 +425,7 @@ export default function App() {
         i === activeIndex && cell ? { ...cell, userInput: L, status: cell.status === "wrong" ? "neutral" : cell.status } : cell
       );
 
-      // advance within current word
+      // 
       const { cells, pos } = getWordCells(activeIndex, direction);
       const nextPos = pos + 1;
       if (cells.length && nextPos < cells.length) {
@@ -478,6 +529,69 @@ export default function App() {
     }
   }
 
+  function openClearModal() {
+    if (grid.length === 0) return;
+    // remember if timer was running; pause while modal is open
+    resumeAfterModalRef.current = started && !paused && !completed;
+    if (resumeAfterModalRef.current) {
+      setPaused(true);
+      persistState(grid, timer, started, true, completed);
+    }
+    setShowClearModal(true);
+  }
+
+  function closeClearModal() {
+    setShowClearModal(false);
+    // resume only if we were running before opening
+    if (resumeAfterModalRef.current && !completed) {
+      setPaused(false);
+      persistState(grid, timer, started, false, completed);
+    }
+    resumeAfterModalRef.current = false;
+  }
+
+  // Clear only unchecked/incorrect/blank cells; keep correct
+  function clearErrors() {
+    const cleared = grid.map((c) => {
+      if (!c) return null;
+      const exp = String(c.answer || "").toUpperCase();
+      const act = String(c.userInput || "").toUpperCase();
+      const correct = !!act && act === exp;
+      return correct ? c : { ...c, userInput: "", status: "neutral" };
+    });
+    setGrid(cleared);
+    // keep playing; puzzle is not completed after this
+    savePuzzleState(currentDate, {
+      date: currentDate,
+      timer,
+      started,
+      paused: true, // still paused until modal closes
+      completed: false,
+      grid: cleared.map((c) => (c ? { userInput: c.userInput || "", status: c.status || "neutral" } : null)),
+    });
+    closeClearModal();
+  }
+
+  // Clear everything and fully reset this date’s puzzle
+  function clearAll() {
+    const cleared = grid.map((c) => (c ? { ...c, userInput: "", status: "neutral" } : null));
+    setGrid(cleared);
+    setTimer(0);
+    setStarted(false);
+    setPaused(false);
+    setCompleted(false);
+    clearPuzzleState(currentDate);
+    savePuzzleState(currentDate, {
+      date: currentDate,
+      timer: 0,
+      started: false,
+      paused: false,
+      completed: false,
+      grid: cleared.map((c) => (c ? { userInput: "", status: "neutral" } : null)),
+    });
+    closeClearModal();
+  }
+
   // Save current state if the tab is hidden/closed (so timer progress isn't lost)
   useEffect(() => {
     function persistNow() {
@@ -494,6 +608,7 @@ export default function App() {
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-gray-50">
+      {showConfetti && <ReactConfetti recycle={false} />}
       <div
         className="relative w-full max-w-5xl lg:max-w-6xl xl:max-w-7xl 2xl:max-w-[90rem] min-h-[80vh] bg-white rounded-2xl shadow-lg overflow-hidden flex flex-col"
         onKeyDown={(e) => {
@@ -512,7 +627,21 @@ export default function App() {
       >
         {/* HEADER */}
         <div className="px-6 py-4 border-b">
-          <Header />
+          <div className="flex items-center justify-between">
+            <Header date={currentDate} />
+            <div className="flex items-center gap-4">
+              <button
+                type="button"
+                onClick={toggleTimer}
+                className="w-24 border px-4 py-1 rounded hover:bg-gray-100"
+              >
+                {!started ? "Start" : paused ? "Resume" : "Pause"}
+              </button>
+              <span className="text-lg font-mono tabular-nums leading-none">
+                {formatTime(timer)}
+              </span>
+            </div>
+          </div>
         </div>
 
         {/* MAIN */}
@@ -540,12 +669,13 @@ export default function App() {
                 inputRefs={inputRefs}
                 activeWordSet={activeWordSet}
                 onCellClick={handleCellClick}
+                disabled={!isPlaying}
               />
             )}
           </div>
 
           {/* RIGHT: clues (only visible when running) */}
-          <aside className="w-72 md:w-80 xl:w-96 2xl:w-[28rem] shrink-0 p-6 overflow-y-auto border-l">
+          <aside className="w-72 md:w-80 xl:w-96 2xl:w-[32rem] shrink-0 p-6 overflow-y-auto border-l">
             {started && !paused ? (
               <ClueList
                 clues={puzzle || []}
@@ -561,43 +691,48 @@ export default function App() {
         </div>
 
         {/* FOOTER — left: Clear, center: Check Answers */}
-        <div className="px-6 py-4 border-t flex items-center justify-between">
-          <button
-            type="button"
-            onClick={handleClear}
-            className="border px-3 py-1 rounded hover:bg-gray-100"
-            title="Clear unchecked/incorrect cells (or reset completed puzzle)"
-          >
-            Clear
-          </button>
-
-          <Footer onCheck={checkAnswers} disabled={!started || paused || completed} />
-          <div className="w-[80px]" aria-hidden /> {/* spacer to balance layout */}
+        <div className="px-6 py-4 border-t">
+          <Footer>
+            <button
+              type="button"
+              onClick={openClearModal}
+              className="border px-3 py-1 rounded hover:bg-gray-100"
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              onClick={checkAnswers}
+              disabled={!started || paused}
+              className="bg-blue-600 text-white px-6 py-2 rounded font-semibold hover:bg-blue-700 disabled:opacity-50"
+            >
+              Check Answers
+            </button>
+            <div className="flex gap-2">
+              <button
+                type="button"
+                onClick={() => navigate("/random")}
+                className="border px-3 py-1 rounded hover:bg-gray-100"
+              >
+                Random
+              </button>
+              <button
+                type="button"
+                onClick={() => navigate("/scoreboard")}
+                className="border px-3 py-1 rounded hover:bg-gray-100"
+              >
+                Scoreboard
+              </button>
+            </div>
+          </Footer>
         </div>
-
-        {/* FLOATING CONTROLS ON RIGHT EDGE */}
-        <div className="absolute top-4 right-6 flex items-center gap-4">
-          <button
-            type="button"
-            onClick={toggleTimer}
-            className="w-24 border px-4 py-1 rounded hover:bg-gray-100"
-          >
-            {!started ? "Start" : paused ? "Resume" : "Pause"}
-          </button>
-          <span className="text-lg font-mono tabular-nums">{formatTime(timer)}</span>
-        </div>
-
-        {/* SCOREBOARD BUTTON — bottom-right, near footer (kept from earlier) */}
-        <div className="absolute bottom-4 right-6">
-          <button
-            type="button"
-            onClick={() => navigate("/scoreboard")}
-            className="border px-3 py-1 rounded hover:bg-gray-100"
-            title="View scoreboard"
-          >
-            Scoreboard
-          </button>
-        </div>
+        <ConfirmClearModal
+          open={showClearModal}
+          onClose={closeClearModal}
+          onClearErrors={clearErrors}
+          onClearAll={clearAll}
+          disabledClearErrors={completed || isAllCorrect(grid)}
+        />
       </div>
     </main>
   );
