@@ -1,35 +1,52 @@
-// server.js
 const express = require('express');
 const cors = require('cors');
 
 const app = express();
 app.use(cors());
 
-// --- In-memory cache { date: { timestamp, data } }
 const cache = {};
 const CACHE_TTL = 1000 * 60 * 60; // 1 hour
 const FIRST_DATE = '2014-08-21';
 
+app.use((req, _res, next) => {
+  if (req.url.startsWith('/api/')) {
+    req.url = req.url.slice(4); // remove leading '/api'
+  }
+  next();
+});
+
 function isValidDateStr(s) {
   return /^\d{4}-\d{2}-\d{2}$/.test(s);
 }
+
+// Parse a yyyy-mm-dd date string into a Date object
 function toDate(s) {
   const [y, m, d] = s.split('-').map(Number);
   return new Date(y, m - 1, d);
 }
+
+// Format a Date object as yyyy-mm-dd
 function fmt(dateObj) {
   const y = dateObj.getFullYear();
   const m = String(dateObj.getMonth() + 1).padStart(2, '0');
   const d = String(dateObj.getDate()).padStart(2, '0');
   return `${y}-${m}-${d}`;
 }
+
+// Return today's date as yyyy-mm-dd
 function todayISO() {
   return fmt(new Date());
 }
+
+// Return number of days between two date strings (a, b)
+// Both a and b must be valid date strings (yyyy-mm-dd)
 function daysBetween(a, b) {
   const ms = 24 * 60 * 60 * 1000;
   return Math.floor((toDate(b) - toDate(a)) / ms);
 }
+
+// Return a random date string between aISO and bISO (inclusive)
+// Both aISO and bISO must be valid date strings (yyyy-mm-dd)
 function randomDateBetween(aISO, bISO) {
   const span = daysBetween(aISO, bISO);
   const offset = Math.floor(Math.random() * (span + 1));
@@ -38,6 +55,8 @@ function randomDateBetween(aISO, bISO) {
   return fmt(base);
 }
 
+// Middleware to validate :date param
+// If invalid, respond with 400 and error message
 function validateDateMiddleware(req, res, next) {
   const date = req.params.date;
   if (!isValidDateStr(date)) {
@@ -59,6 +78,8 @@ function validateDateMiddleware(req, res, next) {
   next();
 }
 
+// Fetch the mini puzzle JSON for a given date
+// Returns { status, body, type }
 async function fetchMini(date) {
   const url = `https://www.nytimes.com/svc/crosswords/v6/puzzle/mini/${date}.json`;
   const r = await fetch(url, {
@@ -72,36 +93,40 @@ async function fetchMini(date) {
   });
   const body = await r.text();
   const type = r.headers.get('content-type') || 'application/json';
+  console.log("Returning crossword for", date)
   return { status: r.status, body, type };
 }
 
-// 1) RANDOM FIRST so it doesn't get swallowed by :date
+// Random mini route: try up to 5 times to find a date that exists
+// If all fail, return the first date as a fallback
+// Response format: { resolvedDate, body: [nytJson] }
+app.use(express.json());
 app.get('/puzzle/mini/random.json', async (req, res) => {
-  const end = todayISO();
-
-  for (let attempt = 0; attempt < 8; attempt++) {
-    const date = randomDateBetween(FIRST_DATE, end);
-    try {
+  try {
+    const end = todayISO();
+    for (let attempt = 0; attempt < 5; attempt++) {
+      const date = randomDateBetween(FIRST_DATE, end);
       const { status, body, type } = await fetchMini(date);
       if (status === 200) {
-        // cache it like the date route does
+        const nyt = JSON.parse(body);
         cache[date] = { timestamp: Date.now(), data: body };
-        // tell the client which date was chosen
-        res.setHeader('X-Crossword-Date', date);
-        console.log("Returning random crossword for", date);
-        return res.status(200).type(type).send(body);
+        return res.json({ resolvedDate: date, body: [nyt] });
       }
-    } catch (_) {
-      // try another date
     }
+
+    const fallback = FIRST_DATE;
+    const { body } = await fetchMini(fallback);
+    const nyt = JSON.parse(body);
+    return res.json({ resolvedDate: fallback, body: [nyt] });
+  } catch (err) {
+    console.error(err);
+    return res.status(500).json({ error: String(err?.message || err) });
   }
-  // fallback to first available if we somehow strike out
-  const { status, body, type } = await fetchMini(FIRST_DATE);
-  res.setHeader('X-Crossword-Date', FIRST_DATE);
-  return res.status(status).type(type).send(body);
 });
 
-// 2) Plain param route (no regex); validator enforces yyyy-mm-dd
+
+// Specific date route with caching
+// Response format: [nytJson]
 app.get('/puzzle/mini/:date.json', validateDateMiddleware, async (req, res) => {
   const date = req.params.date;
   const now = Date.now();
@@ -119,7 +144,7 @@ app.get('/puzzle/mini/:date.json', validateDateMiddleware, async (req, res) => {
   }
 });
 
-// --- Cache admin
+// Cache management routes
 app.get('/cache/clear', (req, res) => {
   Object.keys(cache).forEach(k => delete cache[k]);
   res.json({ ok: true, message: 'Cache cleared' });
@@ -132,6 +157,14 @@ app.get('/cache/clear/:date', (req, res) => {
   } else {
     res.json({ ok: false, message: `No cache entry for ${date}` });
   }
+});
+
+const path = require('path');
+app.use(express.static(path.join(__dirname, 'dist')));
+
+const SPA_ROUTES = /^(?!\/(puzzle|cache)\/).*/;
+app.get(SPA_ROUTES, (_req, res) => {
+  res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 
 const PORT = process.env.PORT || 3001;
