@@ -8,6 +8,7 @@ import ConfirmClearModal from "./components/ConfirmClearModal";
 import { recordScore, loadPuzzleState, savePuzzleState, clearPuzzleState } from "./utils/scoreStorage";
 import ReactConfetti from "react-confetti";
 import "./App.css";
+import winSfx from "./assets/win.mp3";
 
 
 // Return today's date as yyyy-mm-dd
@@ -58,6 +59,16 @@ export default function App() {
   const [finalTime, setFinalTime] = useState(null);
 
   const isPlaying = started && !paused && !completed;
+
+  const winAudioRef = React.useRef(null);
+  const [soundEnabled, setSoundEnabled] = useState(true);
+
+  useEffect(() => {
+    const el = new Audio(winSfx);
+    el.preload = "auto";
+    el.volume = 0.6;
+    winAudioRef.current = el;
+  }, []);
 
   // Timer effect
   useEffect(() => {
@@ -276,19 +287,26 @@ export default function App() {
   // Finish puzzle helper (stable)
   // Stops timer, marks everything correct, shows alert, records score, persists state
   // Called when user completes the puzzle or when auto-complete is detected
-  const finishPuzzle = useCallback((finalGrid) => {
+  const finishPuzzle = useCallback(async (finalGrid) => {
     blurActive();
 
     setShowConfetti(true);
-    setTimeout(() => setShowConfetti(false), 30000);
+    setTimeout(() => setShowConfetti(false), 10000);
 
     // Stop timer and mark completed
     if (intervalId) clearInterval(intervalId);
     setCompleted(true);
 
-    const secs = (t => t)(timer); // freeze current state
+    // Freeze timer and show toast
+    const secs = (t => t)(timer);
     setFinalTime(formatTime(secs));
     setShowToast(true);
+
+    try {
+      if (soundEnabled) await winAudioRef.current?.play();
+    } catch (_) {
+      // autoplay may be blocked until user interacts; ignore errors
+    }
 
     // ensure grid shows correct everywhere
     const corrected = finalGrid.map((c) => (c ? { ...c, status: "correct" } : null));
@@ -711,7 +729,7 @@ export default function App() {
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-gray-50">
-      {showConfetti && <ReactConfetti recycle={false} numberOfPieces={400} />}
+      {showConfetti && <ReactConfetti recycle={false} numberOfPieces={600} />}
 
       {/* TOAST */}
       {showToast && (
