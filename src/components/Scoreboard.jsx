@@ -1,7 +1,7 @@
 // components/Scoreboard.jsx
-import React, { useMemo } from "react";
+import React from "react";
 import { useNavigate } from "react-router-dom";
-import { loadScores } from "../utils/scoreStorage";
+import { loadScores, clearScores } from "../utils/scoreStorage";
 
 function format(seconds) {
   const m = String(Math.floor(seconds / 60)).padStart(2, "0");
@@ -11,11 +11,55 @@ function format(seconds) {
 
 export default function Scoreboard() {
   const navigate = useNavigate();
-  const scores = useMemo(() => {
+  const [scores, setScores] = React.useState([]);
+
+  React.useEffect(() => {
     const list = loadScores();
-    // Sort: most recent date first
-    return [...list].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0));
+    setScores([...list].sort((a, b) => (a.date < b.date ? 1 : a.date > b.date ? -1 : 0)));
   }, []);
+
+  const todayISO = React.useMemo(() => {
+    const d = new Date();
+    const m = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${d.getFullYear()}-${m}-${day}`;
+  }, []);
+
+  function handleClear() {
+    if (window.confirm("Clear all saved scores?")) {
+      clearScores();
+      setScores([]);
+    }
+  }
+
+  function handleExport() {
+    // CSV header
+    const header = ["date", "seconds", "formatted"];
+    const rows = scores.map((s) => [s.date, String(s.seconds), format(s.seconds)]);
+
+    // Build CSV with BOM for Excel friendliness
+    const csvLines = [header.join(","), ...rows.map((r) => r.map(escapeCsv).join(","))].join("\r\n");
+    const blob = new Blob(["\uFEFF" + csvLines], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+
+    const a = document.createElement("a");
+    a.href = url;
+    const stamp = new Date().toISOString().slice(0, 10).replace(/-/g, "");
+    a.download = `nyt-mini-scoreboard-${stamp}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function escapeCsv(value) {
+    const v = value ?? "";
+    // Escape if contains comma/quote/newline
+    if (/[",\r\n]/.test(v)) {
+      return `"${String(v).replace(/"/g, '""')}"`;
+    }
+    return String(v);
+  }
 
   return (
     <main className="min-h-screen flex items-center justify-center bg-gray-50">
@@ -28,14 +72,15 @@ export default function Scoreboard() {
               type="button"
               onClick={() => navigate(-1)}
               className="border px-3 py-1 rounded hover:bg-gray-100"
+              title="Back"
             >
               ← Back
             </button>
             <button
               type="button"
-              onClick={() => navigate(`/${new Date().toISOString().slice(0,10)}`)}
+              onClick={() => navigate(`/${todayISO}`)}
               className="border px-3 py-1 rounded hover:bg-gray-100"
-              title="Go to today's puzzle"
+              title="Go to today’s puzzle"
             >
               Today
             </button>
@@ -45,7 +90,9 @@ export default function Scoreboard() {
         {/* BODY */}
         <div className="p-6 flex-1 overflow-auto">
           {scores.length === 0 ? (
-            <div className="text-gray-500 italic">No completed puzzles yet. Finish a puzzle to record your time!</div>
+            <div className="text-gray-500 italic">
+              No completed puzzles yet. Finish a puzzle to record your time!
+            </div>
           ) : (
             <div className="overflow-hidden rounded-xl border">
               <table className="w-full text-left text-sm">
@@ -77,8 +124,28 @@ export default function Scoreboard() {
           )}
         </div>
 
-        {/* FOOTER (empty for now) */}
-        <div className="px-6 py-4 border-t" />
+        {/* FOOTER — Export (left) & Clear (right) */}
+        <div className="px-6 py-4 border-t flex items-center justify-between">
+          <button
+            type="button"
+            onClick={handleExport}
+            className="border px-3 py-1 rounded hover:bg-gray-100"
+            title="Export scoreboard to CSV"
+            disabled={scores.length === 0}
+          >
+            Export CSV
+          </button>
+
+          <button
+            type="button"
+            onClick={handleClear}
+            className="border px-3 py-1 rounded text-red-600 hover:bg-red-50 disabled:opacity-50"
+            title="Clear all saved scores"
+            disabled={scores.length === 0}
+          >
+            Clear
+          </button>
+        </div>
       </div>
     </main>
   );
