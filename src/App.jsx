@@ -7,6 +7,7 @@ import Footer from "./components/Footer";
 import ConfirmClearModal from "./components/ConfirmClearModal";
 import { recordScore, loadPuzzleState, savePuzzleState, clearPuzzleState } from "./utils/scoreStorage";
 import ReactConfetti from "react-confetti";
+import "./App.css";
 
 
 // Return today's date as yyyy-mm-dd
@@ -715,7 +716,9 @@ export default function App() {
       {/* TOAST */}
       {showToast && (
         <div
-          className="absolute top-16 left-1/2 -translate-x-1/2 z-50"
+          className="fixed top-0 left-1/2 -translate-x-1/2 z-50
+               transform transition-transform duration-500 ease-out
+               translate-y-[-100%] animate-[slideDown_0.5s_ease-out_forwards]"
           role="status"
           aria-live="polite"
         >
@@ -724,32 +727,27 @@ export default function App() {
             <div className="text-left">
               <div className="font-semibold">Crossword completed!</div>
               <div className="text-sm text-gray-600">
-                Final time: <span className="font-mono tabular-nums">{finalTime}</span>
+                Final time:{" "}
+                <span className="font-mono tabular-nums">{finalTime}</span>
               </div>
             </div>
-
             <button
               onClick={handlePlayAnother}
               className="ml-2 rounded-lg px-3 py-1 text-sm bg-blue-600 text-white hover:bg-blue-700"
-              title="Load another random Mini"
               type="button"
             >
               Play another
             </button>
-
             <button
               onClick={() => navigate("/scoreboard")}
               className="ml-2 rounded-lg px-2 py-1 text-sm border hover:bg-gray-100"
-              title="View scoreboard"
               type="button"
             >
               Scoreboard
             </button>
-
             <button
               onClick={() => setShowToast(false)}
               className="ml-2 rounded-lg px-2 py-1 text-sm border hover:bg-gray-100"
-              title="Dismiss"
               type="button"
             >
               Close
