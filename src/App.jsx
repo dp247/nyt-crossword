@@ -271,6 +271,9 @@ export default function App() {
   // Stops timer, marks everything correct, shows alert, records score, persists state
   // Called when user completes the puzzle or when auto-complete is detected
   const finishPuzzle = useCallback((finalGrid) => {
+    blurActive();
+    setShowConfetti(true);
+    setTimeout(() => setShowConfetti(false), 30000);
     if (intervalId) clearInterval(intervalId);
     setCompleted(true);
     const secs = (t => t)(timer); // freeze current state
@@ -279,14 +282,13 @@ export default function App() {
     setGrid(corrected);
     recordScore({ date: currentDate, seconds: secs });
     persistState(corrected, secs, started, paused, true);
-    setShowConfetti(true);
-    setTimeout(() => setShowConfetti(false), 30000);
     alert(`🎉 Crossword complete in ${String(Math.floor(secs / 60)).padStart(2, "0")}:${String(secs % 60).padStart(2, "0")}!`);
   }, [intervalId, timer, currentDate, persistState, started, paused]);
 
   // Handle input change in a cell
   function handleInput(index, value) {
     setGrid((prev) => {
+      if (!prev[index] || prev[index].status === "correct") return prev;
       const next = prev.map((cell, i) =>
         i === index && cell
           ? { ...cell, userInput: (value || "").toUpperCase(), status: cell.status === "wrong" ? "neutral" : cell.status }
@@ -340,6 +342,34 @@ export default function App() {
     });
   }
 
+  function firstEditableIndex(cells, grid) {
+    if (!cells?.length) return null;
+    for (const idx of cells) {
+      const c = grid[idx];
+      if (c && c.status !== "correct" && !c.userInput) return idx; // prefer empty
+    }
+    for (const idx of cells) {
+      const c = grid[idx];
+      if (c && c.status !== "correct") return idx; // any non-locked
+    }
+    return null;
+  }
+
+  function firstEditableAnywhere(grid) {
+    for (let i = 0; i < grid.length; i++) {
+      const c = grid[i];
+      if (c && c.status !== "correct") return i;
+    }
+    return null;
+  }
+
+  function blurActive() {
+    if (activeIndex != null) {
+      const el = inputRefs.current[activeIndex];
+      if (el && el.blur) el.blur();
+    }
+  }
+
   // Check answers button handler
   // Marks each cell as correct/wrong/neutral based on user input
   function checkAnswers() {
@@ -356,9 +386,24 @@ export default function App() {
     // If all correct now, finish the puzzle
     if (nextGrid.every((c) => !c || c.status === "correct")) {
       setGrid(nextGrid);
+      blurActive();
       finishPuzzle(nextGrid);
     } else {
       setGrid(nextGrid);
+      // if focus landed on a locked cell, move to next editable in the current word
+      if (activeIndex != null && nextGrid[activeIndex]?.status === "correct") {
+        // Try same word in current direction
+        const { cells } = getWordCells(activeIndex, direction);
+        let target = firstEditableIndex(cells, nextGrid);
+        // Else try anywhere
+        if (target == null) target = firstEditableAnywhere(nextGrid);
+        // Else clear selection and blur
+        if (target != null) setActiveIndex(target);
+        else {
+          setActiveIndex(null);
+          blurActive();
+        }
+      }
       persistState(nextGrid, timer, started, paused, completed);
     }
   }
@@ -384,7 +429,7 @@ export default function App() {
   function toggleDirection() {
     const nextDir = direction === "Across" ? "Down" : "Across";
     const { cells } = getWordCells(activeIndex, nextDir);
-    const target = firstUnfilledIndex(cells, grid);
+    const target = firstEditableIndex(cells, grid);
     if (target != null) setActiveIndex(target);
     setDirection(nextDir);
   }
@@ -488,10 +533,26 @@ export default function App() {
     return cells[0];
   }
 
+  function firstEditableIndex(cells, grid) {
+    if (!cells?.length) return null;
+    for (const idx of cells) {
+      const c = grid[idx];
+      if (c && c.status !== "correct" && !c.userInput) return idx; // prefer empty & editable
+    }
+    // if none empty, allow the first *non-locked* to edit/overwrite; else fallback to first
+    for (const idx of cells) {
+      const c = grid[idx];
+      if (c && c.status !== "correct") return idx;
+    }
+    return null; // whole word locked
+  }
+
+
+
 
   const handleSelectClue = useCallback((clue) => {
     setDirection(clue.direction);
-    const target = firstUnfilledIndex(clue.cells, grid);
+    const target = firstEditableIndex(clue.cells, grid);
     if (target != null) setActiveIndex(target);
   }, [grid]);
 
@@ -501,7 +562,7 @@ export default function App() {
     if (activeIndex === i) {
       const nextDir = direction === "Across" ? "Down" : "Across";
       const { cells } = getWordCells(i, nextDir);
-      const target = firstUnfilledIndex(cells, grid);
+      const target = firstEditableIndex(cells, grid);
       if (target != null) setActiveIndex(target);
       setDirection(nextDir);
     } else {

@@ -32,15 +32,17 @@ export default function CrosswordGrid({
           const isActive = i === activeIndex;
           const inActiveWord = activeWordSet?.has(i);
           const status = cell?.status || "neutral";
+          const locked = status === "correct";
 
           return (
             <div key={i} className="w-[var(--cell)] aspect-square relative">
               {isPlayable ? (
                 <button
                   type="button"
-                  onClick={() =>
-                    !disabled && (onCellClick ? onCellClick(i) : setActiveIndex?.(i))
-                  }
+                  onClick={() => {
+                    if (disabled || locked) return;
+                    (onCellClick ? onCellClick(i) : setActiveIndex?.(i));
+                  }}
                   className={[
                     "absolute inset-0 border flex items-center justify-center transition-shadow",
                     status === "neutral" && inActiveWord ? "bg-yellow-50/70" : "",
@@ -48,9 +50,9 @@ export default function CrosswordGrid({
                     status === "correct" ? "bg-gray-200 text-black" : "",
                     status === "wrong" ? "bg-red-300 text-white" : "",
                     status === "neutral" && !inActiveWord ? "bg-white text-black" : "",
-                    disabled ? "cursor-not-allowed" : "",
+                    (disabled || locked) ? "cursor-not-allowed" : "",
                   ].join(" ")}
-                  aria-disabled={disabled ? "true" : "false"}
+                  aria-disabled={disabled || locked ? "true" : "false"}
                   aria-label={`Cell ${i}`}
                   aria-current={isActive ? "true" : "false"}
                 >
@@ -67,9 +69,9 @@ export default function CrosswordGrid({
                     ].join(" ")}
                     maxLength={1}
                     value={cell.userInput}
-                    onChange={(e) => !disabled && onInput(i, e.target.value)}
-                    tabIndex={disabled ? -1 : isActive ? 0 : -1}
-                    readOnly={disabled}
+                    onChange={(e) => !(disabled || locked) && onInput(i, e.target.value)}
+                    tabIndex={(disabled || locked) ? -1 : (isActive ? 0 : -1)}
+                    readOnly={disabled || locked}
                     aria-label={`Letter input for cell ${i}`}
                   />
                 </button>
