@@ -45,7 +45,7 @@ Built with **React + Tailwind CSS** on the frontend and an **Express proxy** bac
 Clone and install dependencies:
 
 ```bash
-git clone https://github.com/dp247/nyt-mini.git
+git clone https://github.com/dp247/nyt-crossword.git
 cd <repo>
 npm install
 ```
